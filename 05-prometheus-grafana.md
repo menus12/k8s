@@ -142,7 +142,7 @@ replicaset.apps/grafana-567c957b5   1         1         1       41m
 
 ## Создание сервисов внешних имен и ingress resource
 
-Так как сервисы для веб доступа к prometheus и grafana расположены в отдельных пространствах имен, необходимо создать сервисы внешних имен, на которые будет ссылаться ingress resource.
+Так как сервисы для веб-доступа к prometheus и grafana расположены в отдельных пространствах имен, необходимо создать сервисы внешних имен, на которые будет ссылаться ingress resource.
 
 Создайте YAML-манифесты для сервисов внешних имен.
 
@@ -170,7 +170,7 @@ spec:
   externalName: grafana.grafana.svc.cluster.local
 ```
 
-Примените созданные YAML-манифесты и проверьте что они появились в пространстве имен по умолчанию. Обратите внимание, что в поле EXTERNAL-IP указанные полные доменные имена соответствующих сервисов.
+Примените созданные YAML-манифесты и проверьте, что они появились в пространстве имен по умолчанию. Обратите внимание, что в поле EXTERNAL-IP указанны полные доменные имена соответствующих сервисов.
 
 ```bash
 kubectl create -f extname-prometheus.yaml -f extname-grafana.yaml
@@ -186,7 +186,7 @@ prometheus   ExternalName   <none>       prometheus-server.prometheus.svc.cluste
 Создайте YAML-манифест ```ingress-resource.yaml``` и укажите в нем созданные внешние имена для сервисов prometheus и grafana. Данные правида будут использоваться для маршрутизации запросов к опубликованым сервисам по DNS-именам:
 
 * http://prometheus.example.com --> prometheus:80 (--> prometheus-server.prometheus.svc.cluster.local:80)
-* http://grafana.example.com --> grafana:80 (--> grafana.grafana.svc.cluster.local)
+* http://grafana.example.com --> grafana:80 (--> grafana.grafana.svc.cluster.local:80)
 
 ```yaml
 apiVersion: networking.k8s.io/v1
