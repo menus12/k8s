@@ -1,261 +1,16 @@
-## Установка и запуск NFS-сервера
+## Предварительая конфигурация
 
-На узле, который выполняет роль NFS-сервера (в данном примере kub01) выполните команды для установки пакетов и запуска сервиса.
-
-```bash
-sudo apt install -y nfs-kernel-server
-sudo systemctl enable nfs-server
-sudo systemctl start nfs-server
-```
-
-Создайте директорию, в которой будут размещаться тома для монтрования.
-
-```bash
-sudo mkdir -p /srv/nsf/kubedata
-sudo chmod -R 777 /srv/nsf/kubedata
-```
-
-Задайте параметры экспорта данной директории через NFS-сервер и примените изменения.
-
-```bash
-sudo echo "/srv/nfs/kubedata *(rw,sync,no_subtree_check,insecure)" >> /etc/exports
-sudo exportfs -rav
-```
-
-Проверьте экспорт директории на сервере.
-
-```bash
-$ sudo exportfs -v
-/srv/nfs/kubedata
-                <world>(sync,wdelay,hide,no_subtree_check,sec=sys,rw,insecure,root_squash,no_all_squash)
-
-$ showmount -e
-Export list for kub01:
-/srv/nfs/kubedata *
-```
-
-На узлах, на которых будут запускаться Pod'ы, установите необходимые компоненты для работы с NFS и проверьте возмжность монтирования директории через NFS.
-
-```bash
-sudo apt install -y nfs-common
-sudo mount -t nfs kub01:/srv/nfs/kubedata /mnt
-```
-
-На NFS-сервере создайте файл и прочитайте его на узле, на котором примонтрована NFS-директория, затем удалите его и размонтируйте NFS-директорию
-
-```bash
-kub01:~$ echo hello > /srv/nfs/kubedata/hello
-kub02:~$ cat /mnt/hello
-hello
-kub02:~$ rm /mnt/hello
-kub02:~$ sudo umount /mnt
-```
-
-## Создание YAML манифестов
-
-Создайте YAML-манифест ```rbac.yaml```. В данном манифесте будут описаны следующие сущности:
-
-* Роль — с правилами "get", "list", "watch", "create", "update", "patch" для всех endpoints
-* Сервисный аккаунт
-* Привязка роли к сервисному аккаунту
-* Роль кластера с правилами
-  * "get", "list", "watch", "create", "delete" для persistentvolumes
-  * "get", "list", "watch", "update" для persistentvolumeclaims
-  * "get", "list", "watch" для storageclasses
-  * "create", "update", "patch" для events
-* Привязка роли кластера к сервисному аккаунту
-
-```yaml
-kind: ServiceAccount
-apiVersion: v1
-metadata:
-  name: nfs-client-provisioner
----
-kind: ClusterRole
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: nfs-client-provisioner-runner
-rules:
-  - apiGroups: [""]
-    resources: ["persistentvolumes"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list", "watch", "update"]
-  - apiGroups: ["storage.k8s.io"]
-    resources: ["storageclasses"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "update", "patch"]
----
-kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: run-nfs-client-provisioner
-subjects:
-  - kind: ServiceAccount
-    name: nfs-client-provisioner
-    namespace: default
-roleRef:
-  kind: ClusterRole
-  name: nfs-client-provisioner-runner
-  apiGroup: rbac.authorization.k8s.io
----
-kind: Role
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: leader-locking-nfs-client-provisioner
-rules:
-  - apiGroups: [""]
-    resources: ["endpoints"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
----
-kind: RoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: leader-locking-nfs-client-provisioner
-subjects:
-  - kind: ServiceAccount
-    name: nfs-client-provisioner
-    # replace with namespace where provisioner is deployed
-    namespace: default
-roleRef:
-  kind: Role
-  name: leader-locking-nfs-client-provisioner
-  apiGroup: rbac.authorization.k8s.io
-```
-
-Создайте YAML-манифеси ```storageClass.yaml```. Данный класс хранения будет использоваться по умолчанию.
-
-```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: managed-nfs-storage
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: example.com/nfs
-parameters:
-  archiveOnDelete: "false"
-```
-
-Создайте YAML-манифест ```deployment.yaml```. Данный манифест развернет на стороне кластера pod, который будет отвечать за автоматическое монтирование томов для оатсльных pod'ов через класс хранения по умолчанию. В данном примере в качестве NFS-сервера используется ```kub01```.
-
-```yaml
-kind: Deployment
-apiVersion: apps/v1
-metadata:
-  name: nfs-client-provisioner
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: nfs-client-provisioner
-  template:
-    metadata:
-      labels:
-        app: nfs-client-provisioner
-    spec:
-      serviceAccountName: nfs-client-provisioner
-      containers:
-        - name: nfs-client-provisioner
-          image: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
-          volumeMounts:
-            - name: nfs-client-root
-              mountPath: /persistentvolumes
-          env:
-            - name: PROVISIONER_NAME
-              value: example.com/nfs
-            - name: NFS_SERVER
-              value: kub01
-            - name: NFS_PATH
-              value: /srv/nfs/kubedata
-      volumes:
-        - name: nfs-client-root
-          nfs:
-            server: kub01
-            path: /srv/nfs/kubedata
-```
-
-Примените созданные YAML-манифесты. 
-
-```bash
-kubectl create -f rbac.yaml
-kubectl create -f storageClass.yaml
-kubectl create -f deployment.yaml
-```
-
-## Установка Helm
-
-Для автоматической установки Helm версии 3 выполните следующую команду.
-
-```bash
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-```
-
-Проверьте, что установка прошла успешно.
-
-```bash
-$ helm version --short
-v3.12.2+g1e210a2
-```
+* Развернут балансировщик нагрузки
+* Развернут nginx ingress
+* Развернут nfs client provisioner
+* Установлен Helm v3
 
 ## Установка Prometheus
-
-Добавьте репозиторий Prometheus Community в Helm.
-
-```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-$ helm repo list
-NAME                    URL
-prometheus-community    https://prometheus-community.github.io/helm-charts
-```
-
-Скачайте файл values со значениями Prometheus для возможности локального редактирования.
-
-```bash
-helm show values prometheus-community/prometheus > prometheus-values.yaml
-```
-
-Отредактируйте локальный файл ```prometheus-values.yaml```. 
-
-* В директиве ```server.service``` измените значение ключа ```type``` с ```ClusterIP``` на ```NodePort```
-* Добавьте ключ ```nodePort``` со значением ```30080```.
-
-В итоге, директива ```server.service``` должна выглядеть так:
-
-```yaml
-  service:
-    ## If false, no Service will be created for the Prometheus server
-    ##
-    enabled: true
-
-    annotations: {}
-    labels: {}
-    clusterIP: ""
-
-    ## List of IP addresses at which the Prometheus server service is available
-    ## Ref: https://kubernetes.io/docs/concepts/services-networking/service/#external-ips
-    ##
-    externalIPs: []
-
-    loadBalancerIP: ""
-    loadBalancerSourceRanges: []
-    servicePort: 80
-    sessionAffinity: None
-    nodePort: 30080
-    type: NodePort
-```
 
 Установите Prometheus через Helm в отдельном пространстве имен ```prometheus```.
 
 ```bash
-helm install prometheus prometheus-community/prometheus --values prometheus-values.yaml --namespace prometheus --create-namespace
+helm upgrade --install prometheus prometheus --repo https://prometheus-community.github.io/helm-charts --namespace prometheus --create-namespace
 ```
 
 Проверьте, что helm-chart в статусе ```deployed```.
@@ -271,37 +26,36 @@ prometheus      prometheus      1               2023-08-03 10:42:21.992172165 +0
 ```bash
 $ kubectl get all -n prometheus
 NAME                                                     READY   STATUS    RESTARTS   AGE
-pod/prometheus-alertmanager-0                            1/1     Running   0          2m12s
-pod/prometheus-kube-state-metrics-69c8887cfd-g92qm       1/1     Running   0          2m12s
-pod/prometheus-prometheus-node-exporter-hk4hn            0/1     Pending   0          2m12s
-pod/prometheus-prometheus-node-exporter-jzh5x            1/1     Running   0          2m12s
-pod/prometheus-prometheus-node-exporter-r4rh5            1/1     Running   0          2m12s
-pod/prometheus-prometheus-pushgateway-79ff799669-krz8k   1/1     Running   0          2m12s
-pod/prometheus-server-b978f5586-m9s6v                    2/2     Running   0          2m12s
+pod/prometheus-alertmanager-0                            1/1     Running   0          40m
+pod/prometheus-kube-state-metrics-69c8887cfd-sxvtv       1/1     Running   0          40m
+pod/prometheus-prometheus-node-exporter-kf8t7            1/1     Running   0          40m
+pod/prometheus-prometheus-node-exporter-lx5p4            1/1     Running   0          40m
+pod/prometheus-prometheus-pushgateway-79ff799669-pmml2   1/1     Running   0          40m
+pod/prometheus-server-b978f5586-vqskt                    2/2     Running   0          40m
 
-NAME                                          TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
-service/prometheus-alertmanager               ClusterIP   10.107.230.226   <none>        9093/TCP       2m12s
-service/prometheus-alertmanager-headless      ClusterIP   None             <none>        9093/TCP       2m12s
-service/prometheus-kube-state-metrics         ClusterIP   10.102.98.120    <none>        8080/TCP       2m12s
-service/prometheus-prometheus-node-exporter   ClusterIP   10.103.230.180   <none>        9100/TCP       2m12s
-service/prometheus-prometheus-pushgateway     ClusterIP   10.105.168.242   <none>        9091/TCP       2m12s
-service/prometheus-server                     NodePort    10.98.85.233     <none>        80:30080/TCP   2m12s
+NAME                                          TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+service/prometheus-alertmanager               ClusterIP   10.96.34.0       <none>        9093/TCP   40m
+service/prometheus-alertmanager-headless      ClusterIP   None             <none>        9093/TCP   40m
+service/prometheus-kube-state-metrics         ClusterIP   10.96.133.109    <none>        8080/TCP   40m
+service/prometheus-prometheus-node-exporter   ClusterIP   10.107.242.229   <none>        9100/TCP   40m
+service/prometheus-prometheus-pushgateway     ClusterIP   10.106.126.121   <none>        9091/TCP   40m
+service/prometheus-server                     ClusterIP   10.101.220.21    <none>        80/TCP     40m
 
 NAME                                                 DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
-daemonset.apps/prometheus-prometheus-node-exporter   3         3         2       3            2           kubernetes.io/os=linux   2m12s
+daemonset.apps/prometheus-prometheus-node-exporter   2         2         2       2            2           kubernetes.io/os=linux   40m
 
 NAME                                                READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/prometheus-kube-state-metrics       1/1     1            1           2m12s
-deployment.apps/prometheus-prometheus-pushgateway   1/1     1            1           2m12s
-deployment.apps/prometheus-server                   1/1     1            1           2m12s
+deployment.apps/prometheus-kube-state-metrics       1/1     1            1           40m
+deployment.apps/prometheus-prometheus-pushgateway   1/1     1            1           40m
+deployment.apps/prometheus-server                   1/1     1            1           40m
 
 NAME                                                           DESIRED   CURRENT   READY   AGE
-replicaset.apps/prometheus-kube-state-metrics-69c8887cfd       1         1         1       2m12s
-replicaset.apps/prometheus-prometheus-pushgateway-79ff799669   1         1         1       2m12s
-replicaset.apps/prometheus-server-b978f5586                    1         1         1       2m12s
+replicaset.apps/prometheus-kube-state-metrics-69c8887cfd       1         1         1       40m
+replicaset.apps/prometheus-prometheus-pushgateway-79ff799669   1         1         1       40m
+replicaset.apps/prometheus-server-b978f5586                    1         1         1       40m
 
 NAME                                       READY   AGE
-statefulset.apps/prometheus-alertmanager   1/1     2m12s
+statefulset.apps/prometheus-alertmanager   1/1     40m
 ```
 
 Проверьте, что pv были автоматически созданы в нужном классе хранения.
@@ -309,46 +63,24 @@ statefulset.apps/prometheus-alertmanager   1/1     2m12s
 ```bash
 $ kubectl get pvc -n prometheus
 NAME                                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          AGE
-prometheus-server                   Bound    pvc-150357bb-0f8d-4053-a8c6-ebb68defd313   8Gi        RWO
-managed-nfs-storage   3m41s
-storage-prometheus-alertmanager-0   Bound    pvc-05c1b98d-d6ad-4c43-8b25-142bad80d65e   2Gi        RWO
-managed-nfs-storage   3m41s
+prometheus-server                   Bound    pvc-6d6c640b-9e4a-4105-8706-30fd2ab90b39   8Gi        RWO            managed-nfs-storage   41m
+storage-prometheus-alertmanager-0   Bound    pvc-e071a030-1043-49fe-b3d4-270a02b4f4c8   2Gi        RWO            managed-nfs-storage   41m
 
 $ ls /srv/nfs/kubedata/
 prometheus-prometheus-server-pvc-150357bb-0f8d-4053-a8c6-ebb68defd313
 prometheus-storage-prometheus-alertmanager-0-pvc-05c1b98d-d6ad-4c43-8b25-142bad80d65e
 ```
 
-Проверьте через веб-браузер, что веб-сервис Prometheus доступен из внешней сети по HTTP на порту 30080.
-
-```bash
-$ curl http://kub02:30080/
-<a href="/graph">Found</a>.
-```
-
 ## Установка Grafana
-
-Добавьте репозиторий Grafana в Helm.
-
-```bash
-helm repo add grafana https://grafana.github.io/helm-charts
-
-$ helm repo list
-NAME                    URL
-prometheus-community    https://prometheus-community.github.io/helm-charts
-grafana                 https://grafana.github.io/helm-charts
-```
 
 Скачайте файл values со значениями Grafana для возможности локального редактирования.
 
 ```bash
-helm show values grafana/grafana > grafana-values.yaml
+helm show values grafana --repo https://grafana.github.io/helm-charts > grafana-values.yaml
 ```
 
 Отредактируйте локальный файл ```grafana-values.yaml```.
 
-* В директиве ```service``` измените значение ключа ```type``` с ```ClusterIP``` на ```NodePort```
-* Добавьте ключ ```nodePort``` со значением ```30180```
 * Раскоментируйте ключ ```adminPassword```, оставьте пароль по умолчанию
 * В директиве ```persistence``` измените значение ключа ```enabled``` с ```false``` на ```true```
 * Значение кюча ```size``` измените на ```2Gi```
@@ -357,15 +89,6 @@ helm show values grafana/grafana > grafana-values.yaml
 В итоге, измененные директивы должны выглядеть так:
 
 ```yaml
-service:
-  enabled: true
-  type: NodePort
-  port: 80
-  targetPort: 3000
-  nodePort: 30180
-
-~~~~~
-
 persistence:
   type: pvc
   enabled: true
@@ -389,8 +112,7 @@ initChownData:
 Установите Grafana с помощью Helm в отдельном пространстве имен ```grafana```.
 
 ```bash
-helm install grafana grafana/grafana --values grafana-values.yaml --namespace
-grafana --create-namespace
+helm upgrade --install grafana grafana --repo https://grafana.github.io/helm-charts --values grafana-values.yaml --namespace grafana --create-namespace
 ```
 
 Проверьте, что helm-chart в статусе ```deployed```.
@@ -406,45 +128,149 @@ grafana grafana         1               2023-08-03 11:30:03.187605954 +0000 UTC 
 ```bash
 $ kubectl get all -n grafana
 NAME                          READY   STATUS    RESTARTS   AGE
-pod/grafana-567c957b5-wzhls   1/1     Running   0          53m
+pod/grafana-567c957b5-rm4xz   1/1     Running   0          41m
 
-NAME              TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
-service/grafana   NodePort   10.107.24.104   <none>        80:30180/TCP   53m
+NAME              TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+service/grafana   ClusterIP   10.111.35.166   <none>        80/TCP    41m
 
 NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/grafana   1/1     1            1           53m
+deployment.apps/grafana   1/1     1            1           41m
 
 NAME                                DESIRED   CURRENT   READY   AGE
-replicaset.apps/grafana-567c957b5   1         1         1       53m
+replicaset.apps/grafana-567c957b5   1         1         1       41m
 ```
 
-Проверьте с помощью веб-браузера, что веб-сервис Grafana доступен из внешних сетей на порту 30180.
+## Создание сервисов внешних имен и ingress resource
+
+Так как сервисы для веб доступа к prometheus и grafana расположены в отдельных пространствах имен, необходимо создать сервисы внешних имен, на которые будет ссылаться ingress resource.
+
+Создайте YAML-манифесты для сервисов внешних имен.
+
+* extname-prometheus.yaml
+
+```yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: prometheus
+spec:
+  type: ExternalName
+  externalName: prometheus-server.prometheus.svc.cluster.local
+```
+
+* extname-grafana.yaml
+
+```yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: grafana
+spec:
+  type: ExternalName
+  externalName: grafana.grafana.svc.cluster.local
+```
+
+Примените созданные YAML-манифесты и проверьте что они появились в пространстве имен по умолчанию. Обратите внимание, что в поле EXTERNAL-IP указанные полные доменные имена соответствующих сервисов.
 
 ```bash
-$ curl http://kub02:30180
-<a href="/login">Found</a>.
+kubectl create -f extname-prometheus.yaml -f extname-grafana.yaml
+
+$ kubectl get svc
+NAME         TYPE           CLUSTER-IP   EXTERNAL-IP                                      PORT(S)                        AGE
+grafana      ExternalName   <none>       grafana.grafana.svc.cluster.local                <none>                         34m
+kubelet      ClusterIP      None         <none>                                           10250/TCP,10255/TCP,4194/TCP   2d
+kubernetes   ClusterIP      10.96.0.1    <none>                                           443/TCP                        6d
+prometheus   ExternalName   <none>       prometheus-server.prometheus.svc.cluster.local   <none>                         31m
 ```
 
-Войдите в веб-панель Grafana, добавьте Data Source, выберите Prometheus. В качестве ```Prometheus server URL``` укажите адрес и порт сервиса ```prometheus-server```, который доступен изнутри кластера (в данном примере http://10.98.85.233:80).
+Создайте YAML-манифест ```ingress-resource.yaml``` и укажите в нем созданные внешние имена для сервисов prometheus и grafana. Данные правида будут использоваться для маршрутизации запросов к опубликованым сервисам по DNS-именам:
+
+* http://prometheus.example.com --> prometheus:80 (--> prometheus-server.prometheus.svc.cluster.local:80)
+* http://grafana.example.com --> grafana:80 (--> grafana.grafana.svc.cluster.local)
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-resource-nginx
+spec:
+  rules:
+  - host: prometheus.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus
+            port:
+              number: 80
+  - host: grafana.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana
+            port:
+              number: 80
+```
+
+Примените созданный YAML-манифест и проверьте его параметры. Обратите внимание на ошибки в поле ```Backends``` — ```<error: endpoints not found>)``` — которые возникают из-за того, что endpoint'ы отсутствуют в данном пространстве имен.
 
 ```bash
-$ kubectl get svc -n prometheus
-NAME                                  TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
-prometheus-alertmanager               ClusterIP   10.107.230.226   <none>        9093/TCP       50m
-prometheus-alertmanager-headless      ClusterIP   None             <none>        9093/TCP       50m
-prometheus-kube-state-metrics         ClusterIP   10.102.98.120    <none>        8080/TCP       50m
-prometheus-prometheus-node-exporter   ClusterIP   10.103.230.180   <none>        9100/TCP       50m
-prometheus-prometheus-pushgateway     ClusterIP   10.105.168.242   <none>        9091/TCP       50m
-prometheus-server                     NodePort    10.98.85.233     <none>        80:30080/TCP   50m
+kubectl create -f ingress-resource.yaml
+
+$ kubectl describe ing ingress-resource-nginx
+Name:             ingress-resource-nginx
+Labels:           <none>
+Namespace:        default
+Address:
+Ingress Class:    nginx
+Default backend:  <default>
+Rules:
+  Host                    Path  Backends
+  ----                    ----  --------
+  prometheus.example.com    /   prometheus:80 (<error: endpoints "prometheus" not found>)
+  grafana.example.com       /   grafana:80 (<error: endpoints "grafana" not found>)
+Annotations:              <none>
+Events:
+  Type    Reason  Age   From                      Message
+  ----    ------  ----  ----                      -------
+  Normal  Sync    8s    nginx-ingress-controller  Scheduled for sync
 ```
+
+## Проверка работы Prometheus и Grafana
+
+Проверьте, какой IP-адрес используется ingress-контроллером для балансировки нагрузки.
+
+```bash
+$ kubectl get svc -n ingress-nginx
+NAME                                 TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
+ingress-nginx-controller             LoadBalancer   10.100.178.253   192.168.133.160   80:30562/TCP,443:31608/TCP   60m
+ingress-nginx-controller-admission   ClusterIP      10.96.120.252    <none>            443/TCP                      60m
+```
+
+Добавьте тестовые DNS-записи в файл hosts.
+
+```bash
+192.168.133.160 prometheus.example.com
+192.168.133.160 grafana.example.com
+```
+
+Войдите в веб-панель Grafana по адресу ```http://grafana.example.com```, добавьте Data Source, выберите Prometheus. В качестве ```Prometheus server URL``` укажите FQDN сервиса ```prometheus-server```, который доступен изнутри кластера — ```prometheus-server.prometheus.svc.cluster.local```.
 
 Для тестирования связки Prometheus и Grafana импортируйте dashboard с номером 10000 (https://grafana.com/grafana/dashboards/10000-kubernetes-cluster-monitoring-via-prometheus/).
+
+Также проверьте, что веб-панель Prometheus доступна через веб-интерфейс по адресу ```http://prometheus.example.com```.
 
 ## Очистка тестового окружения
 
 ```bash
-helm uninstall grafana  --namespace grafana
-helm uninstall prometheus  --namespace prometheus
-kubectl delete pvc --all
-kubectl delete -f deployment.yaml -f storageClass.yaml -f rbac.yaml
+kubectl delete -f ingress-resource.yaml -f extname-prometheus.yaml -f extname-grafana.yaml
+helm uninstall grafana --namespace grafana
+helm uninstall prometheus --namespace prometheus
+kubectl delete ns prometheus
+kubectl delete ns grafana
 ```
