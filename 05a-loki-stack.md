@@ -204,7 +204,7 @@ metadata:
 type: Opaque
 ```
 
-Декодируйте пароль удминистратора из base64.
+Декодируйте пароль администратора из base64.
 
 ```bash
 $ echo "YWE4YUpiMjJ3ZzVmUlJ4emFjTzlDNnY4V2RPUjR4VW5kY21JbGNlaA==" | base64 -d; echo
