@@ -168,6 +168,49 @@ ingress-nginx-controller-admission   ClusterIP      10.96.120.252    <none>     
 192.168.133.160 grafana.example.com
 ```
 
+Узнайте пароль администратора Grafana. Просмотрите секреты, сгенерированные при установке loki-stack.
+
+```bash
+kubectl get secrets -n loki-stack
+NAME                               TYPE                 DATA   AGE
+loki-stack                         Opaque               1      8m4s
+loki-stack-grafana                 Opaque               3      6m46s
+loki-stack-promtail                Opaque               1      8m4s
+sh.helm.release.v1.loki-stack.v1   helm.sh/release.v1   1      8m4s
+sh.helm.release.v1.loki-stack.v2   helm.sh/release.v1   1      6m46s
+
+$ kubectl get secret loki-stack-grafana -n loki-stack -o yaml
+apiVersion: v1
+data:
+  admin-password: YWE4YUpiMjJ3ZzVmUlJ4emFjTzlDNnY4V2RPUjR4VW5kY21JbGNlaA==
+  admin-user: YWRtaW4=
+  ldap-toml: ""
+kind: Secret
+metadata:
+  annotations:
+    meta.helm.sh/release-name: loki-stack
+    meta.helm.sh/release-namespace: loki-stack
+  creationTimestamp: "2023-08-05T14:18:17Z"
+  labels:
+    app.kubernetes.io/instance: loki-stack
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/version: 8.3.5
+    helm.sh/chart: grafana-6.43.5
+  name: loki-stack-grafana
+  namespace: loki-stack
+  resourceVersion: "146335"
+  uid: bbcb063c-04b4-4489-ad46-f2fd264d8599
+type: Opaque
+```
+
+Декодируйте пароль удминистратора из base64.
+
+```bash
+$ echo "YWE4YUpiMjJ3ZzVmUlJ4emFjTzlDNnY4V2RPUjR4VW5kY21JbGNlaA==" | base64 -d; echo
+aa8aJb22wg5fRRxzacO9C6v8WdOR4xUndcmIlceh
+```
+
 Войдите в веб-панель Grafana по адресу ```http://grafana.example.com```, перейдите в панель Configuration -> Data Sources и обратите внимание, что источники Loki и Prometheus уже добавлены.
 
 Для тестирования связки Prometheus и Grafana импортируйте dashboard с номером 10000 (https://grafana.com/grafana/dashboards/10000-kubernetes-cluster-monitoring-via-prometheus/).
