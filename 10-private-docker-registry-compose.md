@@ -6,7 +6,7 @@
 
 ## Установка локального репозитория с помощью Docker Compose
 
-Создайте YAML-манифест docker-compose.yaml
+Создайте YAML-манифест ```docker-compose.yaml```
 
 ```yaml
 version: '3.0'
@@ -264,7 +264,6 @@ NAME                                          READY   STATUS    RESTARTS        
 pod/fastapi-7975c76769-2kgjg                  1/1     Running   0               42m
 pod/fastapi-7975c76769-rwb9r                  1/1     Running   0               42m
 pod/fastapi-7975c76769-tqpqm                  1/1     Running   0               42m
-pod/registry-6b8b57688b-9rlxw                 1/1     Running   0               61m
 
 NAME                      TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                        AGE
 service/fastapi-service   ClusterIP   10.107.59.53    <none>        80/TCP                         42m
